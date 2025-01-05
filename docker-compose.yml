@@ -1,0 +1,35 @@
+# docker-compose.yml
+version: '3.8'
+
+services:
+  app:
+    build: .
+    container_name: go-upload-service
+    restart: unless-stopped
+    environment:
+      - AWS_REGION=${AWS_REGION}
+      - AWS_BUCKET=${AWS_BUCKET}
+      - AWS_ACCESS_KEY_ID=${AWS_ACCESS_KEY_ID}
+      - AWS_SECRET_ACCESS_KEY=${AWS_SECRET_ACCESS_KEY}
+    networks:
+      - app-network
+
+  nginx:
+    build: 
+      context: ./nginx
+      dockerfile: Dockerfile
+    container_name: nginx
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"  # For SSL
+    depends_on:
+      - app
+    networks:
+      - app-network
+    volumes:
+      - ./nginx/ssl:/etc/nginx/ssl:ro  # For SSL certificates
+
+networks:
+  app-network:
+    driver: bridge
