@@ -1,25 +1,25 @@
 package main
 
 import (
-	"bytes"
-	"context"
-	"encoding/json"
-	"fmt"
-	"io"
-	"log"
-	"net/http"
-	"os"
-	"path/filepath"
+    "bytes"
+    "context"
+    "encoding/json"
+    "fmt"
+    "io"
+    "log"
+    "net/http"
+    "os"
+    "path/filepath"
 
-	"github.com/aws/aws-sdk-go-v2/aws"
-	"github.com/aws/aws-sdk-go-v2/config"
-	"github.com/aws/aws-sdk-go-v2/service/s3"
-	"github.com/google/uuid"
-	"github.com/gorilla/mux"
+    "github.com/aws/aws-sdk-go-v2/aws"
+    "github.com/aws/aws-sdk-go-v2/config"
+    "github.com/aws/aws-sdk-go-v2/service/s3"
+    "github.com/google/uuid"
+    "github.com/gorilla/mux"
 )
 
 type UploadResponse struct {
-    URLs []string `json:"urls"`
+    URLs map[string]string `json:"urls"`
 }
 
 type S3Client struct {
@@ -42,10 +42,10 @@ func NewS3Client() (*S3Client, error) {
     }, nil
 }
 
-func (s *S3Client) uploadToS3(ctx context.Context, file []byte, filename string) (string, error) {
+func (s *S3Client) uploadToS3(ctx context.Context, file []byte, directory string, filename string) (string, error) {
     // Generate unique filename
     ext := filepath.Ext(filename)
-    uniqueFilename := fmt.Sprintf("%s%s", uuid.New().String(), ext)
+    uniqueFilename := fmt.Sprintf("%s/%s%s", directory, uuid.New().String(), ext)
     
     // Create the input for PutObject
     input := &s3.PutObjectInput{
@@ -70,20 +70,44 @@ func (s *S3Client) uploadToS3(ctx context.Context, file []byte, filename string)
 
 func handleUpload(s3Client *S3Client) http.HandlerFunc {
     return func(w http.ResponseWriter, r *http.Request) {
+        // Set CORS headers
+        w.Header().Set("Access-Control-Allow-Origin", "*")
+        w.Header().Set("Access-Control-Allow-Methods", "POST, OPTIONS")
+        w.Header().Set("Access-Control-Allow-Headers", "Content-Type")
+
+        if r.Method == "OPTIONS" {
+            w.WriteHeader(http.StatusOK)
+            return
+        }
+
         // Set max upload size - 10 MB
         r.ParseMultipartForm(10 << 20)
 
-        // Get files from form
-        files := r.MultipartForm.File["images"]
-        if len(files) == 0 {
+        // Get directory from form
+        directory := r.FormValue("directory")
+        if directory == "" {
+            directory = "uploads" // default directory
+        }
+
+        // Get tags from form
+        tags := r.MultipartForm.File
+        if len(tags) == 0 {
             http.Error(w, "No files uploaded", http.StatusBadRequest)
             return
         }
 
-        var urls []string
+        urls := make(map[string]string)
         ctx := context.Background()
 
-        for _, fileHeader := range files {
+        // Iterate through each tag and its files
+        for tag, files := range tags {
+            if len(files) == 0 {
+                continue
+            }
+
+            // Use the first file for each tag
+            fileHeader := files[0]
+            
             // Open the file
             file, err := fileHeader.Open()
             if err != nil {
@@ -99,14 +123,14 @@ func handleUpload(s3Client *S3Client) http.HandlerFunc {
                 return
             }
 
-            // Upload to S3
-            url, err := s3Client.uploadToS3(ctx, fileBytes, fileHeader.Filename)
+            // Upload to S3 with directory
+            url, err := s3Client.uploadToS3(ctx, fileBytes, directory, fileHeader.Filename)
             if err != nil {
                 http.Error(w, fmt.Sprintf("Error uploading to S3: %v", err), http.StatusInternalServerError)
                 return
             }
 
-            urls = append(urls, url)
+            urls[tag] = url
         }
 
         // Return response
@@ -124,7 +148,7 @@ func main() {
 
     // Set up router
     r := mux.NewRouter()
-    r.HandleFunc("/upload", handleUpload(s3Client)).Methods("POST")
+    r.HandleFunc("/upload", handleUpload(s3Client)).Methods("POST", "OPTIONS")
 
     // Start server
     port := os.Getenv("PORT")
